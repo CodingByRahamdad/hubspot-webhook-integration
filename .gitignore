@@ -1,0 +1,20 @@
+node_modules/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Local databases and persistent data
+data/
+data-backup-*/
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary test script
+dup-test.js
+
+# Logs and operating-system files
+npm-debug.log*
+.DS_Store

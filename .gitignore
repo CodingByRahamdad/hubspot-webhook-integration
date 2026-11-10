@@ -5,6 +5,14 @@ node_modules/
 .env.*
 !.env.example
 
+# Google service-account keys. The real key lives OUTSIDE this project
+# (D:\Google-Credentials\); these patterns are a safety net in case a copy ever
+# lands in the project folder.
+google-*.json
+*service-account*.json
+nifty-stage-*.json
+credentials/
+
 # Local databases and persistent data
 data/
 data-backup-*/

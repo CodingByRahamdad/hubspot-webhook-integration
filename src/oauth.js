@@ -20,7 +20,7 @@
 const crypto = require('crypto');
 const express = require('express');
 const { loadKey } = require('./security/tokenCrypto');
-const { getTokenService, saveAuthorizedTokens } = require('./oauth/tokenService');
+const { getTokenService, saveAuthorizedTokens, getValidAccessToken } = require('./oauth/tokenService');
 
 const router = express.Router();
 
@@ -329,5 +329,82 @@ router.get('/callback', async (req, res) => {
     });
   }
 });
+
+// =============================================================================
+// TEMPORARY DIAGNOSTIC - REMOVE AFTER TESTING
+// (delete everything down to the "END TEMPORARY DIAGNOSTIC" line, the
+// getValidAccessToken import above, and tests/oauth-diagnostic.test.js)
+//
+// POST /oauth/diagnostics/token-check
+//   Header:  X-Diagnostic-Key: <value of HUBSPOT_CLIENT_SECRET>   (never in the URL)
+//   Gets a token through the EXISTING token service (which refreshes it when due),
+//   then makes one tiny authenticated HubSpot call to prove the token works.
+//   Only portal DIAG_PORTAL_ID can be tested. The reply holds four fixed fields and
+//   never a token, header, secret or any HubSpot data.
+// =============================================================================
+const DIAG_PORTAL_ID = 247711076;
+const DIAG_URL = 'https://api.hubapi.com/crm/v3/objects/contacts?limit=1';
+const DIAG_TIMEOUT_MS = 10 * 1000;
+
+// Constant-time comparison: hash both sides to equal length, then timingSafeEqual.
+function diagKeyMatches(provided, expected) {
+  if (typeof provided !== 'string' || typeof expected !== 'string' || !provided || !expected) return false;
+  const a = crypto.createHash('sha256').update(provided).digest();
+  const b = crypto.createHash('sha256').update(expected).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
+function diagReply(res, tokenRetrieved, hubspotRequestOk, hubspotStatus, message) {
+  return res
+    .status(tokenRetrieved && hubspotRequestOk ? 200 : 502)
+    .json({ tokenRetrieved, hubspotRequestOk, hubspotStatus, message });
+}
+
+router.post('/diagnostics/token-check', async (req, res) => {
+  const header = req.headers['x-diagnostic-key'];
+  if (!diagKeyMatches(Array.isArray(header) ? undefined : header, process.env.HUBSPOT_CLIENT_SECRET)) {
+    return res.status(401).json({ message: 'Unauthorized.' });
+  }
+
+  // Step 1: token from the existing token service. Log only the safe error code.
+  let accessToken;
+  try {
+    accessToken = await getValidAccessToken(DIAG_PORTAL_ID);
+  } catch (err) {
+    const code = err && typeof err.code === 'string' && /^[A-Z_]{1,40}$/.test(err.code) ? err.code : 'UNKNOWN';
+    console.error(`OAuth diagnostic: token retrieval failed (${code}).`);
+    return diagReply(res, false, false, null, 'Could not retrieve a valid token.');
+  }
+
+  // Step 2: one lightweight authenticated call. The body is discarded unread.
+  try {
+    const response = await fetch(DIAG_URL, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+      redirect: 'error',
+      signal: AbortSignal.timeout(DIAG_TIMEOUT_MS),
+    });
+    if (response.body) await response.body.cancel().catch(() => {});
+    console.log(`OAuth diagnostic: token retrieved; HubSpot API answered HTTP ${response.status}.`);
+    return diagReply(
+      res,
+      true,
+      response.ok,
+      response.status,
+      response.ok ? 'Token retrieved and HubSpot API request succeeded.' : 'Token retrieved but the HubSpot API request failed.'
+    );
+  } catch (err) {
+    const timedOut = err && (err.name === 'TimeoutError' || err.name === 'AbortError');
+    console.error(`OAuth diagnostic: HubSpot API request failed (${err && err.name ? err.name : 'Error'}).`);
+    return diagReply(
+      res,
+      true,
+      false,
+      null,
+      timedOut ? 'Token retrieved but the HubSpot API request timed out.' : 'Token retrieved but the HubSpot API request could not be completed.'
+    );
+  }
+});
+// ===================== END TEMPORARY DIAGNOSTIC ==============================
 
 module.exports = router;
